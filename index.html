@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AudioContext Actual Render Quantum Size Test</title>
+</head>
+<body>
+    <h2>AudioContext Actual Render Quantum Size Test</h2>
+    <label for="renderSize">Enter renderSizeHint (integer or "hardware"):</label>
+    <input type="text" id="renderSize" value="hardware">
+    <button onclick="testRenderSize()">Test Render Size</button>
+    <pre id="output"></pre>
+
+    <script>
+        function log(message) {
+            const output = document.getElementById('output');
+            output.textContent += message + '\n';
+        }
+
+        async function testRenderSize() {
+            document.getElementById('output').textContent = ''; // Clear previous logs
+            const hintInput = document.getElementById('renderSize').value;
+            const hint = isNaN(hintInput) ? hintInput : parseInt(hintInput, 10);
+
+            log(`Requesting microphone access...`);
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                log(`Microphone access granted.`);
+            } catch (error) {
+                log(`Microphone access denied: ${error.message}`);
+                return;
+            }
+
+            log(`Creating AudioContext with renderSizeHint: ${hint}`);
+            let audioCtx;
+            try {
+                audioCtx = new AudioContext({ renderSizeHint: hint });
+                log(`AudioContext created successfully.`);
+            } catch (error) {
+                log(`Error creating AudioContext: ${error.message}`);
+                return;
+            }
+
+            log(`AudioContext sampleRate: ${audioCtx.sampleRate}`);
+            log(`AudioContext baseLatency: ${audioCtx.baseLatency}`);
+
+            const processorCode = `
+                class SizeProcessor extends AudioWorkletProcessor {
+                    constructor() {
+                        super();
+                        this.reported = false;
+                    }
+                    process(inputs, outputs, parameters) {
+                        if (!this.reported) {
+                            const bufferSize = outputs[0][0].length;
+                            this.port.postMessage({ actualRenderQuantumSize: bufferSize });
+                            this.reported = true;
+                        }
+                        return true;
+                    }
+                }
+                registerProcessor('size-processor', SizeProcessor);
+            `;
+
+            log(`Adding AudioWorklet module...`);
+            try {
+                await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' })));
+                log(`AudioWorklet module added successfully.`);
+            } catch (error) {
+                log(`Error adding AudioWorklet module: ${error.message}`);
+                audioCtx.close();
+                return;
+            }
+
+            log(`Creating AudioWorkletNode...`);
+            const workletNode = new AudioWorkletNode(audioCtx, 'size-processor');
+
+            workletNode.port.onmessage = (event) => {
+                log(`Actual render quantum size reported by processor: ${event.data.actualRenderQuantumSize} frames`);
+                audioCtx.close().then(() => log(`AudioContext closed.`));
+                stream.getTracks().forEach(track => track.stop());
+                log(`Microphone stream stopped.`);
+            };
+
+            log(`Connecting microphone stream to AudioWorkletNode...`);
+            const source = audioCtx.createMediaStreamSource(stream);
+            source.connect(workletNode).connect(audioCtx.destination);
+        }
+    </script>
+</body>
+</html>
