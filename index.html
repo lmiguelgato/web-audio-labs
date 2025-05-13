@@ -2,59 +2,85 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>AudioContext Actual Render Quantum Size Test</title>
+    <title>Web AudioContext Capability Tester</title>
 </head>
 <body>
-    <h2>AudioContext Actual Render Quantum Size Test</h2>
-    <label for="renderSize">Enter renderSizeHint (integer or "hardware"):</label>
-    <input type="text" id="renderSize" value="hardware">
-    <button onclick="testRenderSize()">Test Render Size</button>
+    <h2>AudioContext Capability Tester</h2>
+
+    <label for="renderSize">renderSizeHint (number or "hardware"):</label>
+    <input type="text" id="renderSize" value="hardware"><br>
+
+    <label for="latencyHint">latencyHint ("interactive", "playback", "balanced", or number of ms):</label>
+    <input type="text" id="latencyHint" value="interactive"><br>
+
+    <label for="sampleRate">sampleRate (Hz):</label>
+    <input type="text" id="sampleRate" placeholder="Leave empty for default"><br>
+
+    <button onclick="testAudioContext()">Run Test</button>
     <pre id="output"></pre>
 
     <script>
         function log(message) {
-            const output = document.getElementById('output');
-            output.textContent += message + '\n';
+            document.getElementById('output').textContent += message + '\n';
         }
 
-        async function testRenderSize() {
-            document.getElementById('output').textContent = ''; // Clear previous logs
-            const hintInput = document.getElementById('renderSize').value;
-            const hint = isNaN(hintInput) ? hintInput : parseInt(hintInput, 10);
+        async function testAudioContext() {
+            const output = document.getElementById('output');
+            output.textContent = ''; // clear
+
+            log(`Browser: ${navigator.userAgent}`);
+            const renderSizeHintInput = document.getElementById('renderSize').value;
+            const latencyHintInput = document.getElementById('latencyHint').value;
+            const sampleRateInput = document.getElementById('sampleRate').value;
+
+            const renderSizeHint = isNaN(renderSizeHintInput) ? renderSizeHintInput : parseInt(renderSizeHintInput);
+            const sampleRate = sampleRateInput ? parseFloat(sampleRateInput) : undefined;
+            const latencyHint = isNaN(latencyHintInput) ? latencyHintInput : parseFloat(latencyHintInput);
 
             log(`Requesting microphone access...`);
             let stream;
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 log(`Microphone access granted.`);
-            } catch (error) {
-                log(`Microphone access denied: ${error.message}`);
+            } catch (e) {
+                log(`Microphone access denied: ${e.message}`);
                 return;
             }
 
-            log(`Creating AudioContext with renderSizeHint: ${hint}`);
+            const contextOptions = {
+                latencyHint,
+                sampleRate,
+                renderSizeHint
+            };
+
+            log(`Creating AudioContext with options:\n${JSON.stringify(contextOptions, null, 2)}`);
             let audioCtx;
             try {
-                audioCtx = new AudioContext({ renderSizeHint: hint });
-                log(`AudioContext created successfully.`);
-            } catch (error) {
-                log(`Error creating AudioContext: ${error.message}`);
+                audioCtx = new AudioContext(contextOptions);
+                log(`AudioContext created.`);
+            } catch (e) {
+                log(`Error creating AudioContext: ${e.message}`);
+                stream.getTracks().forEach(track => track.stop());
                 return;
             }
 
-            log(`AudioContext sampleRate: ${audioCtx.sampleRate}`);
-            log(`AudioContext baseLatency: ${audioCtx.baseLatency}`);
+            log(`--- AudioContext Parameters ---`);
+            log(`sampleRate (requested: ${sampleRate ?? 'default'}): ${audioCtx.sampleRate}`);
+            log(`baseLatency (in seconds): ${audioCtx.baseLatency}`);
+            log(`outputLatency (if available): ${audioCtx.outputLatency ?? 'not supported'}`);
+            log(`sinkId (if available): ${audioCtx.sinkId ?? 'not supported'}`);
 
+            // Test render quantum size
             const processorCode = `
                 class SizeProcessor extends AudioWorkletProcessor {
                     constructor() {
                         super();
                         this.reported = false;
                     }
-                    process(inputs, outputs, parameters) {
-                        if (!this.reported) {
-                            const bufferSize = outputs[0][0].length;
-                            this.port.postMessage({ actualRenderQuantumSize: bufferSize });
+                    process(inputs, outputs) {
+                        if (!this.reported && outputs[0]) {
+                            const frames = outputs[0][0]?.length || 0;
+                            this.port.postMessage({ actualRenderQuantumSize: frames });
                             this.reported = true;
                         }
                         return true;
@@ -66,26 +92,24 @@
             log(`Adding AudioWorklet module...`);
             try {
                 await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' })));
-                log(`AudioWorklet module added successfully.`);
-            } catch (error) {
-                log(`Error adding AudioWorklet module: ${error.message}`);
+                log(`AudioWorklet module added.`);
+            } catch (e) {
+                log(`Error adding module: ${e.message}`);
                 audioCtx.close();
+                stream.getTracks().forEach(track => track.stop());
                 return;
             }
 
-            log(`Creating AudioWorkletNode...`);
-            const workletNode = new AudioWorkletNode(audioCtx, 'size-processor');
-
-            workletNode.port.onmessage = (event) => {
-                log(`Actual render quantum size reported by processor: ${event.data.actualRenderQuantumSize} frames`);
-                audioCtx.close().then(() => log(`AudioContext closed.`));
+            const node = new AudioWorkletNode(audioCtx, 'size-processor');
+            node.port.onmessage = (e) => {
+                log(`Actual render quantum size: ${e.data.actualRenderQuantumSize} frames`);
+                audioCtx.close();
                 stream.getTracks().forEach(track => track.stop());
-                log(`Microphone stream stopped.`);
+                log(`Test complete. AudioContext closed and stream stopped.`);
             };
 
-            log(`Connecting microphone stream to AudioWorkletNode...`);
             const source = audioCtx.createMediaStreamSource(stream);
-            source.connect(workletNode).connect(audioCtx.destination);
+            source.connect(node).connect(audioCtx.destination);
         }
     </script>
 </body>
