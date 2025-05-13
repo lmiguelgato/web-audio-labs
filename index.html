@@ -75,84 +75,88 @@
 
             log(`Requesting microphone access...`);
             let stream;
+            let audioCtx;
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 log(`Microphone access granted.`);
+
+                try {
+                    const track = stream.getAudioTracks()[0];
+                    const settings = track.getSettings();
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const selectedDevice = devices.find(
+                        d => d.kind === "audioinput" && d.deviceId === settings.deviceId
+                    );
+                    if (selectedDevice) {
+                        log(`Selected audio input device: "${selectedDevice.label || '(no label)'}" (id: ${selectedDevice.deviceId})`);
+                    } else {
+                        log(`Selected audio input deviceId: ${settings.deviceId} (label unavailable)`);
+                    }
+                } catch (e) {
+                    log("Could not determine selected audio input device.");
+                }
+
+                log(`Creating AudioContext with options: ${JSON.stringify(contextOptions)}`);
+                try {
+                    audioCtx = new AudioContext(contextOptions);
+                    log(`AudioContext created successfully.`);
+                } catch (error) {
+                    log(`Error creating AudioContext: ${error.message}`);
+                    stream.getTracks().forEach(track => track.stop());
+                    return;
+                }
+
+                log(`AudioContext sampleRate: ${audioCtx.sampleRate}`);
+                log(`AudioContext baseLatency: ${audioCtx.baseLatency}`);
+
+                const processorCode = `
+                    class SizeProcessor extends AudioWorkletProcessor {
+                        constructor() {
+                            super();
+                            this.reported = false;
+                        }
+                        process(inputs, outputs, parameters) {
+                            if (!this.reported) {
+                                const bufferSize = outputs[0][0].length;
+                                this.port.postMessage({ actualRenderQuantumSize: bufferSize });
+                                this.reported = true;
+                            }
+                            return true;
+                        }
+                    }
+                    registerProcessor('size-processor', SizeProcessor);
+                `;
+
+                log(`Adding AudioWorklet module...`);
+                try {
+                    await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' })));
+                    log(`AudioWorklet module added successfully.`);
+                } catch (error) {
+                    log(`Error adding AudioWorklet module: ${error.message}`);
+                    audioCtx.close();
+                    stream.getTracks().forEach(track => track.stop());
+                    return;
+                }
+
+                log(`Creating AudioWorkletNode...`);
+                const workletNode = new AudioWorkletNode(audioCtx, 'size-processor');
+
+                workletNode.port.onmessage = (event) => {
+                    log(`Actual render quantum size reported by processor: ${event.data.actualRenderQuantumSize} frames`);
+                    audioCtx.close().then(() => log(`AudioContext closed.`));
+                    stream.getTracks().forEach(track => track.stop());
+                    log(`Microphone stream stopped.`);
+                };
+
+                log(`Connecting microphone stream to AudioWorkletNode...`);
+                const source = audioCtx.createMediaStreamSource(stream);
+                source.connect(workletNode).connect(audioCtx.destination);
+
             } catch (error) {
                 log(`Microphone access denied: ${error.message}`);
-                return;
+                if (stream) stream.getTracks().forEach(track => track.stop());
+                if (audioCtx) audioCtx.close();
             }
-
-            try {
-                const track = stream.getAudioTracks()[0];
-                const settings = track.getSettings();
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const selectedDevice = devices.find(
-                    d => d.kind === "audioinput" && d.deviceId === settings.deviceId
-                );
-                if (selectedDevice) {
-                    log(`Selected audio input device: "${selectedDevice.label || '(no label)'}" (id: ${selectedDevice.deviceId})`);
-                } else {
-                    log(`Selected audio input deviceId: ${settings.deviceId} (label unavailable)`);
-                }
-            } catch (e) {
-                log("Could not determine selected audio input device.");
-            }
-
-            log(`Creating AudioContext with options: ${JSON.stringify(contextOptions)}`);
-            let audioCtx;
-            try {
-                audioCtx = new AudioContext(contextOptions);
-                log(`AudioContext created successfully.`);
-            } catch (error) {
-                log(`Error creating AudioContext: ${error.message}`);
-                return;
-            }
-
-            log(`AudioContext sampleRate: ${audioCtx.sampleRate}`);
-            log(`AudioContext baseLatency: ${audioCtx.baseLatency}`);
-
-            const processorCode = `
-                class SizeProcessor extends AudioWorkletProcessor {
-                    constructor() {
-                        super();
-                        this.reported = false;
-                    }
-                    process(inputs, outputs, parameters) {
-                        if (!this.reported) {
-                            const bufferSize = outputs[0][0].length;
-                            this.port.postMessage({ actualRenderQuantumSize: bufferSize });
-                            this.reported = true;
-                        }
-                        return true;
-                    }
-                }
-                registerProcessor('size-processor', SizeProcessor);
-            `;
-
-            log(`Adding AudioWorklet module...`);
-            try {
-                await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' })));
-                log(`AudioWorklet module added successfully.`);
-            } catch (error) {
-                log(`Error adding AudioWorklet module: ${error.message}`);
-                audioCtx.close();
-                return;
-            }
-
-            log(`Creating AudioWorkletNode...`);
-            const workletNode = new AudioWorkletNode(audioCtx, 'size-processor');
-
-            workletNode.port.onmessage = (event) => {
-                log(`Actual render quantum size reported by processor: ${event.data.actualRenderQuantumSize} frames`);
-                audioCtx.close().then(() => log(`AudioContext closed.`));
-                stream.getTracks().forEach(track => track.stop());
-                log(`Microphone stream stopped.`);
-            };
-
-            log(`Connecting microphone stream to AudioWorkletNode...`);
-            const source = audioCtx.createMediaStreamSource(stream);
-            source.connect(workletNode).connect(audioCtx.destination);
         }
 
         async function testWasmCapabilities() {
