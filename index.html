@@ -18,9 +18,34 @@
 
     <button onclick="testRenderSize()">Test AudioContext</button>
     <button onclick="testWasmCapabilities()">Check WebAssembly Capabilities</button>
+    <button onclick="listAudioDevices()">List Audio Devices</button>
     <pre id="output"></pre>
 
     <script>
+        async function listAudioDevices() {
+            document.getElementById('output').textContent = ''; // Clear logs
+            log("Enumerating audio devices...");
+            try {
+                // Request permission if not already granted, to get device labels
+                await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (e) {
+                log("Microphone access denied or not granted. Device labels may be hidden.");
+            }
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioInputs = devices.filter(d => d.kind === "audioinput");
+            const audioOutputs = devices.filter(d => d.kind === "audiooutput");
+
+            log(`Audio Input Devices (${audioInputs.length}):`);
+            audioInputs.forEach((device, i) => {
+                log(`  [${i}] label: "${device.label || '(no label)'}", id: ${device.deviceId}`);
+            });
+
+            log(`Audio Output Devices (${audioOutputs.length}):`);
+            audioOutputs.forEach((device, i) => {
+                log(`  [${i}] label: "${device.label || '(no label)'}", id: ${device.deviceId}`);
+            });
+        }
+
         function log(message) {
             const output = document.getElementById('output');
             output.textContent += message + '\n';
@@ -56,6 +81,22 @@
             } catch (error) {
                 log(`Microphone access denied: ${error.message}`);
                 return;
+            }
+
+            try {
+                const track = stream.getAudioTracks()[0];
+                const settings = track.getSettings();
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const selectedDevice = devices.find(
+                    d => d.kind === "audioinput" && d.deviceId === settings.deviceId
+                );
+                if (selectedDevice) {
+                    log(`Selected audio input device: "${selectedDevice.label || '(no label)'}" (id: ${selectedDevice.deviceId})`);
+                } else {
+                    log(`Selected audio input deviceId: ${settings.deviceId} (label unavailable)`);
+                }
+            } catch (e) {
+                log("Could not determine selected audio input device.");
             }
 
             log(`Creating AudioContext with options: ${JSON.stringify(contextOptions)}`);
