@@ -2,85 +2,85 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Web AudioContext Capability Tester</title>
+    <title>AudioContext & WebAssembly Capabilities Test</title>
 </head>
 <body>
-    <h2>AudioContext Capability Tester</h2>
+    <h2>AudioContext & WebAssembly Capabilities Test</h2>
 
-    <label for="renderSize">renderSizeHint (number or "hardware"):</label>
-    <input type="text" id="renderSize" value="hardware"><br>
+    <label for="renderSize">Enter renderSizeHint (integer or "hardware"):</label>
+    <input type="text" id="renderSize" value="hardware"><br><br>
 
-    <label for="latencyHint">latencyHint ("interactive", "playback", "balanced", or number of ms):</label>
-    <input type="text" id="latencyHint" value="interactive"><br>
+    <label for="latencyHint">Enter latencyHint ("interactive", "playback", "balanced" or a number in seconds for exact):</label>
+    <input type="text" id="latencyHint" value="interactive"><br><br>
 
-    <label for="sampleRate">sampleRate (Hz):</label>
-    <input type="text" id="sampleRate" placeholder="Leave empty for default"><br>
+    <label for="sampleRate">Enter desired sampleRate (leave blank for default):</label>
+    <input type="text" id="sampleRate" value=""><br><br>
 
-    <button onclick="testAudioContext()">Run Test</button>
+    <button onclick="testRenderSize()">Test AudioContext</button>
+    <button onclick="testWasmCapabilities()">Check WebAssembly Capabilities</button>
     <pre id="output"></pre>
 
     <script>
         function log(message) {
-            document.getElementById('output').textContent += message + '\n';
+            const output = document.getElementById('output');
+            output.textContent += message + '\n';
         }
 
-        async function testAudioContext() {
-            const output = document.getElementById('output');
-            output.textContent = ''; // clear
+        async function testRenderSize() {
+            document.getElementById('output').textContent = ''; // Clear previous logs
 
-            log(`Browser: ${navigator.userAgent}`);
-            const renderSizeHintInput = document.getElementById('renderSize').value;
+            const renderHintInput = document.getElementById('renderSize').value;
+            const renderSizeHint = isNaN(renderHintInput) ? renderHintInput : parseInt(renderHintInput, 10);
+
             const latencyHintInput = document.getElementById('latencyHint').value;
-            const sampleRateInput = document.getElementById('sampleRate').value;
+            const latencyHint = (!isNaN(latencyHintInput) && latencyHintInput.trim() !== "")
+                ? parseFloat(latencyHintInput)
+                : latencyHintInput;
 
-            const renderSizeHint = isNaN(renderSizeHintInput) ? renderSizeHintInput : parseInt(renderSizeHintInput);
-            const sampleRate = sampleRateInput ? parseFloat(sampleRateInput) : undefined;
-            const latencyHint = isNaN(latencyHintInput) ? latencyHintInput : parseFloat(latencyHintInput);
+            const sampleRateInput = document.getElementById('sampleRate').value;
+            const sampleRate = (!isNaN(sampleRateInput) && sampleRateInput.trim() !== "")
+                ? parseInt(sampleRateInput, 10)
+                : undefined;
+
+            const contextOptions = {
+                renderSizeHint,
+                latencyHint
+            };
+            if (sampleRate !== undefined) contextOptions.sampleRate = sampleRate;
 
             log(`Requesting microphone access...`);
             let stream;
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 log(`Microphone access granted.`);
-            } catch (e) {
-                log(`Microphone access denied: ${e.message}`);
+            } catch (error) {
+                log(`Microphone access denied: ${error.message}`);
                 return;
             }
 
-            const contextOptions = {
-                latencyHint,
-                sampleRate,
-                renderSizeHint
-            };
-
-            log(`Creating AudioContext with options:\n${JSON.stringify(contextOptions, null, 2)}`);
+            log(`Creating AudioContext with options: ${JSON.stringify(contextOptions)}`);
             let audioCtx;
             try {
                 audioCtx = new AudioContext(contextOptions);
-                log(`AudioContext created.`);
-            } catch (e) {
-                log(`Error creating AudioContext: ${e.message}`);
-                stream.getTracks().forEach(track => track.stop());
+                log(`AudioContext created successfully.`);
+            } catch (error) {
+                log(`Error creating AudioContext: ${error.message}`);
                 return;
             }
 
-            log(`--- AudioContext Parameters ---`);
-            log(`sampleRate (requested: ${sampleRate ?? 'default'}): ${audioCtx.sampleRate}`);
-            log(`baseLatency (in seconds): ${audioCtx.baseLatency}`);
-            log(`outputLatency (if available): ${audioCtx.outputLatency ?? 'not supported'}`);
-            log(`sinkId (if available): ${audioCtx.sinkId ?? 'not supported'}`);
+            log(`AudioContext sampleRate: ${audioCtx.sampleRate}`);
+            log(`AudioContext baseLatency: ${audioCtx.baseLatency}`);
 
-            // Test render quantum size
             const processorCode = `
                 class SizeProcessor extends AudioWorkletProcessor {
                     constructor() {
                         super();
                         this.reported = false;
                     }
-                    process(inputs, outputs) {
-                        if (!this.reported && outputs[0]) {
-                            const frames = outputs[0][0]?.length || 0;
-                            this.port.postMessage({ actualRenderQuantumSize: frames });
+                    process(inputs, outputs, parameters) {
+                        if (!this.reported) {
+                            const bufferSize = outputs[0][0].length;
+                            this.port.postMessage({ actualRenderQuantumSize: bufferSize });
                             this.reported = true;
                         }
                         return true;
@@ -92,25 +92,72 @@
             log(`Adding AudioWorklet module...`);
             try {
                 await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([processorCode], { type: 'application/javascript' })));
-                log(`AudioWorklet module added.`);
-            } catch (e) {
-                log(`Error adding module: ${e.message}`);
+                log(`AudioWorklet module added successfully.`);
+            } catch (error) {
+                log(`Error adding AudioWorklet module: ${error.message}`);
                 audioCtx.close();
-                stream.getTracks().forEach(track => track.stop());
                 return;
             }
 
-            const node = new AudioWorkletNode(audioCtx, 'size-processor');
-            node.port.onmessage = (e) => {
-                log(`Actual render quantum size: ${e.data.actualRenderQuantumSize} frames`);
-                audioCtx.close();
+            log(`Creating AudioWorkletNode...`);
+            const workletNode = new AudioWorkletNode(audioCtx, 'size-processor');
+
+            workletNode.port.onmessage = (event) => {
+                log(`Actual render quantum size reported by processor: ${event.data.actualRenderQuantumSize} frames`);
+                audioCtx.close().then(() => log(`AudioContext closed.`));
                 stream.getTracks().forEach(track => track.stop());
-                log(`Test complete. AudioContext closed and stream stopped.`);
+                log(`Microphone stream stopped.`);
             };
 
+            log(`Connecting microphone stream to AudioWorkletNode...`);
             const source = audioCtx.createMediaStreamSource(stream);
-            source.connect(node).connect(audioCtx.destination);
+            source.connect(workletNode).connect(audioCtx.destination);
+        }
+
+        async function testWasmCapabilities() {
+            document.getElementById('output').textContent = ''; // Clear logs
+            log("Checking WebAssembly support...");
+
+            const basicSupport = typeof WebAssembly === "object" &&
+                                 typeof WebAssembly.instantiate === "function";
+            log("WebAssembly object and instantiate support: " + (basicSupport ? "✅" : "❌"));
+
+            if (!basicSupport) return;
+
+            const executionSupport = await testWasmExecution();
+            log("WebAssembly binary execution test: " + (executionSupport ? "✅ Successful" : "❌ Failed"));
+
+            const sharedBufferSupport = typeof SharedArrayBuffer === "function";
+            log("SharedArrayBuffer support: " + (sharedBufferSupport ? "✅" : "❌"));
+
+            const atomicsSupport = typeof Atomics === "object" && typeof Atomics.wait === "function";
+            const wasmThreadsSupport = sharedBufferSupport && atomicsSupport;
+            log("WebAssembly threads support (SharedArrayBuffer + Atomics): " + (wasmThreadsSupport ? "✅" : "❌"));
+
+            const wasiSupport = typeof WebAssembly === "object" &&
+                WebAssembly.Module &&
+                WebAssembly.Module.imports;
+            log("WASI support via import inspection: " + (wasiSupport ? "🔍 Partial (requires further test)" : "❌"));
+        }
+
+        async function testWasmExecution() {
+            try {
+                const module = new WebAssembly.Module(
+                    new Uint8Array([
+                        0x00, 0x61, 0x73, 0x6D, // magic number
+                        0x01, 0x00, 0x00, 0x00  // version
+                    ])
+                );
+                new WebAssembly.Instance(module);
+                return true;
+            } catch {
+                return false;
+            }
         }
     </script>
 </body>
 </html>
+
+<!-- This HTML file tests the capabilities of AudioContext and WebAssembly in the browser.
+     It includes input fields for renderSizeHint and latencyHint, and buttons to test the AudioContext
+     and WebAssembly capabilities. The results are displayed in a preformatted text area. -->
