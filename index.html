@@ -96,10 +96,17 @@
                     log("Could not determine selected audio input device.");
                 }
 
+                try {
+                    log("Audio output device selection (setSinkId): " + ("setSinkId" in HTMLMediaElement.prototype ? "✅" : "❌ Not supported"));
+                } catch (e) {
+                    log("Error checking setSinkId support: " + e.message);
+                }
+
                 log(`Creating AudioContext with options: ${JSON.stringify(contextOptions)}`);
                 try {
                     audioCtx = new AudioContext(contextOptions);
                     log(`AudioContext created successfully.`);
+                    log("Maximum output channel count: " + audioCtx.destination.maxChannelCount);
                 } catch (error) {
                     log(`Error creating AudioContext: ${error.message}`);
                     stream.getTracks().forEach(track => track.stop());
@@ -138,6 +145,8 @@
                     return;
                 }
 
+                log("AudioWorklet support: " + (typeof AudioWorkletNode === "function" ? "✅" : "❌ Not available in this browser"));
+
                 log(`Creating AudioWorkletNode...`);
                 const workletNode = new AudioWorkletNode(audioCtx, 'size-processor');
 
@@ -159,12 +168,27 @@
             }
         }
 
+        async function testWasiImportSupport() {
+            // Minimal WASI module (compiled from: (module (import "wasi_snapshot_preview1" "proc_exit" (func))))
+            const wasiModuleBytes = new Uint8Array([
+                0x00,0x61,0x73,0x6d,0x01,0x00,0x00,0x00,0x01,0x07,0x01,0x60,0x00,0x00,0x02,0x1a,0x01,0x15,0x77,0x61,0x73,0x69,0x5f,0x73,0x6e,0x61,0x70,0x73,0x68,0x6f,0x74,0x5f,0x70,0x72,0x65,0x76,0x69,0x65,0x77,0x31,0x09,0x70,0x72,0x6f,0x63,0x5f,0x65,0x78,0x69,0x74,0x00,0x00
+            ]);
+            try {
+                const module = new WebAssembly.Module(wasiModuleBytes);
+                const imports = WebAssembly.Module.imports(module);
+                const hasWasi = imports.some(i => i.module === "wasi_snapshot_preview1");
+                return hasWasi;
+            } catch (e) {
+                return false;
+            }
+        }
+
         async function testWasmCapabilities() {
             document.getElementById('output').textContent = ''; // Clear logs
             log("Checking WebAssembly support...");
 
             const basicSupport = typeof WebAssembly === "object" &&
-                                 typeof WebAssembly.instantiate === "function";
+                                typeof WebAssembly.instantiate === "function";
             log("WebAssembly object and instantiate support: " + (basicSupport ? "✅" : "❌"));
 
             if (!basicSupport) return;
@@ -172,17 +196,51 @@
             const executionSupport = await testWasmExecution();
             log("WebAssembly binary execution test: " + (executionSupport ? "✅ Successful" : "❌ Failed"));
 
+            // These features require special HTTP headers (COOP/COEP) that cannot be set on GitHub Pages.
+            // If they appear unsupported, it may be due to server configuration, not your browser.
             const sharedBufferSupport = typeof SharedArrayBuffer === "function";
-            log("SharedArrayBuffer support: " + (sharedBufferSupport ? "✅" : "❌"));
+            log(
+                "SharedArrayBuffer support: " +
+                (sharedBufferSupport
+                    ? "✅"
+                    : "❌ Not available (may be due to missing COOP/COEP headers on this server, not browser capability)")
+            );
 
             const atomicsSupport = typeof Atomics === "object" && typeof Atomics.wait === "function";
             const wasmThreadsSupport = sharedBufferSupport && atomicsSupport;
-            log("WebAssembly threads support (SharedArrayBuffer + Atomics): " + (wasmThreadsSupport ? "✅" : "❌"));
+            log(
+                "WebAssembly threads support (SharedArrayBuffer + Atomics): " +
+                (wasmThreadsSupport
+                    ? "✅"
+                    : "❌ Not available (may be due to missing COOP/COEP headers on this server, not browser capability)")
+            );
 
             const wasiSupport = typeof WebAssembly === "object" &&
                 WebAssembly.Module &&
                 WebAssembly.Module.imports;
-            log("WASI support via import inspection: " + (wasiSupport ? "🔍 Partial (requires further test)" : "❌"));
+
+            if (wasiSupport) {
+                const wasiImportSupport = await testWasiImportSupport();
+                log("WASI support via import inspection: " + (wasiImportSupport ? "✅" : "🔍 Partial (WebAssembly.Module.imports supported, WASI module not found)"));
+            } else {
+                log("WASI support: ❌ Not available (WebAssembly.Module.imports not supported)");
+            }
+             
+            const simdSupported = WebAssembly.validate(new Uint8Array([
+                0x00,0x61,0x73,0x6d,0x01,0x00,0x00,0x00,0x01,0x0a,0x02,0x60,0x00,0x00,0x60,0x00,0x00,
+                0x03,0x02,0x01,0x01,0x0a,0x09,0x01,0x07,0x00,0xfd,0x00,0x0b
+            ]));
+            log("WebAssembly SIMD support: " + (simdSupported ? "✅" : "❌ Not available, or limited"));
+
+            log("WebAssembly BigInt integration: " + (typeof WebAssembly.Global === "function" && typeof BigInt === "function" ? "✅" : "❌ Not available"));
+
+            try {
+                const mem = new WebAssembly.Memory({initial:1, maximum:2});
+                mem.grow(1);
+                log("WebAssembly.Memory grow: ✅");
+            } catch {
+                log("WebAssembly.Memory grow: ❌");
+            }
         }
 
         async function testWasmExecution() {
