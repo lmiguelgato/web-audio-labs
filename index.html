@@ -241,6 +241,55 @@
             } catch {
                 log("WebAssembly.Memory grow: ❌");
             }
+
+            // Run JIT detection after all other checks
+            testJitMode();
+        }
+
+        function js_square(value) {
+            return value * value;
+        }
+
+        function go(N) {
+            let result = 0;
+            // First loop: only numbers
+            const start1 = performance.now();
+            for (let i = 0; i < N; i++) {
+                result = js_square(i % 999);
+            }
+            const end1 = performance.now();
+
+            // Second loop: mix numbers and objects to trigger deopt
+            const start2 = performance.now();
+            for (let i = 0; i < N; i++) {
+                if ((i % 10000) < 999) {
+                    result += js_square(i % 999);
+                } else {
+                    js_square({ x: 42 });
+                }
+            }
+            const end2 = performance.now();
+
+            return {
+                timeNoDeopt: end1 - start1,
+                timeDeopt: end2 - start2,
+                result
+            };
+        }
+
+        function isRunningInJitlessMode() {
+            // Warm up
+            go(1e4);
+
+            const { timeNoDeopt, timeDeopt } = go(1e6);
+            const ratio = timeDeopt / timeNoDeopt;
+            return ratio <= 12;
+        }
+
+        function testJitMode() {
+            // Do NOT clear logs; just append the result
+            const mode = isRunningInJitlessMode() ? "jitless (interpreter only)" : "jitted (JIT compiler enabled)";
+            log("JavaScript engine mode detected: " + mode);
         }
 
         async function testWasmExecution() {
