@@ -283,6 +283,7 @@
 
             const { timeNoDeopt, timeDeopt } = go(1e6);
             const ratio = timeDeopt / timeNoDeopt;
+            console.log("JIT deoptimization ratio: " + ratio);
             return ratio <= 12;
         }
 
